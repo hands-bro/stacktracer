@@ -1,0 +1,153 @@
+// stacktracer.h
+
+#ifndef __STACK_TRACER_H__
+#define __STACK_TRACER_H__
+
+#include <iostream>     // for uintptr_t, pid_t
+#include <map>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+// Definitions for exporting and importing this API
+#if ( (defined(_WIN32) || defined(_WIN64) /* Windows platform */) \
+	&& (defined(_MSC_VER) /* Microsoft Visual C++ Compiler */) )
+    #define STACK_TRACER_OS_WINDOWS
+	#ifdef LIBNAME_DLL_EXPORTS
+		#define STACK_TRACER_API __declspec(dllexport)
+	#else
+		#define STACK_TRACER_API __declspec(dllimport)
+	#endif
+#elif ( (defined(__unix__) || defined(__linux__) /* UNIX and Linux platform */) \
+	&& (defined(__GNUC__) && defined(__cplusplus) /* GNU C++ Compiler */) )
+    #define STACK_TRACER_OS_LINUX
+	#define STACK_TRACER_API __attribute__((__visibility__("default")))
+#else
+	// Other platforms and compilers are not yet supported.
+	#define STACK_TRACER_API
+#endif
+
+typedef class STACK_TRACER_API StackTracer
+{
+public:
+    StackTracer();
+    virtual ~StackTracer();
+
+    /**
+     *  @brief  Register this class as an error signal handler.
+     *  @note  The target signals SIGABRT, SIGSEGV, SIGBUS, SIGILL, and SIGFPE.
+     */
+    static void register_exception_handler();
+
+    /**
+     *  @brief  Capture the backtrace list from the stackframe of the current thread and store it in std::map.
+     *  @param thread_id  Keyword to use when storing/deleting the backtrace list in the map buffer.
+     *  @return  Return the ID of the current thread that captured the backtrace list as a long long type.
+     *           The returned ID will be the same as the 'thread_id'.
+     */
+    static long long capture_current_stackframe(long long thread_id);
+
+    /**
+     *  @brief  Capture the backtrace list from the stackframe of the current thread and store it in std::map.
+     *  @param thread_id  Keyword to use when storing/deleting the backtrace list in the map buffer.
+     *  @return  Return the ID of the current thread that captured the backtrace list as a long long type.
+     *           The returned ID will be the same as the 'thread_id'.
+     */
+    static long long capture_current_stackframe(std::thread::id thread_id);
+
+    /**
+     *  @brief  Capture the backtrace list from the stackframe of the current thread and store it in std::map.
+     *          This method use the current thread ID as a keyword.
+     *  @return  Return the ID of the current thread that captured the backtrace list as a long long type.
+     */
+    static long long capture_current_stackframe();
+
+    /**
+     *  @brief  Generate a 'Traceback' log from the backtrace list captured by the capture_current_stackframe() function.
+     *          The backtrace informations include the filename, line number, and function name of each call.
+     *  @return  Return the 'Traceback' log as std::string.
+     *  @note
+     *  - When this function is called, all the backtrace list captured so far using the current thread ID are deleted.
+     * 
+     *  - This function internally uses the 'addr2line' commands on Linux.
+     */
+    static std::string get_traceback_log();
+
+protected:
+    /**
+     *  @brief  Capture the backtrace list from the stackframe of the current thread and store it in std::map.
+     *  @param thread_id  Keyword to use when storing/deleting the backtrace list in the map buffer.
+     *  @param skip_depth  Set the number of stackframes to omit when capturing the stackframe.
+     *                     If set to the default(2), the call informations for this function and internal routines are omitted.
+     *  @return  Return the ID of the current thread that captured the backtrace list as a long long type.
+     *           The returned ID will be the same as the 'thread_id'.
+     */
+    static long long _capture_current_stackframe(long long thread_id, unsigned int skip_depth = 2);
+
+    /**
+     *  @brief  Capture the stackframe of the current thread, and backtrace it.
+     *          The backtrace informations include the filename, line number, and function name of each call.
+     *          Additionally, if capture_current_stackframe() was previously called with the same thread ID,
+     *          the backtrace list captured at that time is also included.
+     *  @param signal  Parameter for error signal handling. When calling directly, enter the default value(-1).
+     *  @note
+     *  - When this function is called, all the backtrace list captured so far using the current thread ID are deleted.
+     * 
+     *  - This function internally uses the 'addr2line' commands on Linux.
+     * 
+     *  - This function forcibly terminates the current program after execution.
+     */
+    static void _backtrace_stackframe(int signal = -1);
+
+    /* Convert the data type of the thread ID from std::thread::id to long long.  */
+    static long long _translate_thread_id(std::thread::id thread_id);
+
+    /**
+     *  @brief  Execute the input command on the console.
+     *  @param command  User-defined command.
+     *  @param enable_error_skip  Whether to omit log output when an error occurrs. (default: true)
+     *  @return  Command execution result.
+     */
+    static std::string execute_command(std::string command, bool enable_error_skip = true);
+
+    /* Split the multi-line string into lines.  */
+    static std::vector<std::string> split_string_into_lines(const std::string& multiline_string);
+
+    /**
+     *  @brief  Get the current program name.
+     *  @return  { filename(including path), filename(base) }
+     */
+    static std::vector<std::string> get_program_name();
+
+    /* Get the base address of a running process in hexadecimal.  */
+    static std::string get_base_address_hex(pid_t process_id, std::string process_name, bool enable_uppercase = false);
+
+    /* Get the base address of the current process in hexadecimal.  */
+    static std::string get_base_address_hex(bool enable_uppercase = false);
+
+    /* Get the base address of a running process in decimal.  */
+    static uintptr_t get_base_address_decimal(pid_t process_id, std::string process_name);
+
+    /* Get the base address of the current process in decimal.  */
+    static uintptr_t get_base_address_decimal();
+
+    /* Convert a hexadecimal string to a decimal value.  */
+    static uintptr_t convert_hex_to_decimal(std::string hex);
+
+    /* Convert a decimal value to a hexadecimal string.  */
+    static std::string convert_decimal_to_hex(uintptr_t decimal, bool enable_uppercase = false);
+
+    /**
+     *  @brief  Demangle the mangled name in C/C++.
+     *  @return  Demangled name.
+     */
+    static std::string demangle(const std::string& mangled_name);
+
+    // Buffer to store backtrace list
+    static std::mutex m_mutex;
+    static std::map< long long, std::vector<std::pair<void*, std::string>> > m_trace_map;
+
+} StackTracer;
+
+#endif  // #ifndef __STACK_TRACER_H__
