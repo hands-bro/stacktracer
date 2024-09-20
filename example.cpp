@@ -1,32 +1,16 @@
 #include "stacktracer.h"
 
 // For test
-#include <unistd.h>	// for sleep()
 #include <chrono>
-#include <random>
 #include <thread>
 std::thread* p1 = NULL;
 std::thread* p2 = NULL;
-
-int random_sleep(unsigned int min_time_milliseconds, unsigned int max_time_milliseconds) {
-    std::random_device rd;  // Seed generator
-    std::mt19937 gen(rd()); // Mersenne Twister engine
-    std::uniform_int_distribution<> dis(min_time_milliseconds, max_time_milliseconds);
-
-	// Generate a random time
-    int sleep_time_ms = dis(gen);
-
-    // Sleep
-    std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time_ms));
-
-	return sleep_time_ms;
-}
 
 void functionC1() {
 	// Case 1 : Print stack trace after exception handling.
 	try {
 		printf("Start %s() in a new thread...\n", __FUNCTION__);
-		random_sleep(1000, 1500);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 		throw std::runtime_error("runtime error occurred!");
 	}
 	catch (std::exception& e) {
@@ -40,7 +24,8 @@ void functionC1() {
 void functionC2() {
 	// Case 2 : Print stack trace without exception handling.
 	printf("Start %s() in a new thread...\n", __FUNCTION__);
-	random_sleep(2000, 3000);
+	std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+	
 	// If you are running in the IDE, please continue.
 	int* a = NULL;
 	*a = 0;
@@ -66,7 +51,7 @@ int main() {
 	functionA();
 
 	while (!p1 && !p2) {
-		sleep(100);
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	}
 	p1->join();
 	p2->join();

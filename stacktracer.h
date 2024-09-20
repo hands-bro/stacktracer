@@ -14,7 +14,7 @@
 #if ( (defined(_WIN32) || defined(_WIN64) /* Windows platform */) \
 	&& (defined(_MSC_VER) /* Microsoft Visual C++ Compiler */) )
     #define STACK_TRACER_OS_WINDOWS
-	#ifdef LIBNAME_DLL_EXPORTS
+	#ifdef STACK_TRACER_DLL_EXPORTS
 		#define STACK_TRACER_API __declspec(dllexport)
 	#else
 		#define STACK_TRACER_API __declspec(dllimport)
@@ -45,6 +45,8 @@ public:
      *  @param thread_id  Keyword to use when storing/deleting the backtrace list in the map buffer.
      *  @return  Return the ID of the current thread that captured the backtrace list as a long long type.
      *           The returned ID will be the same as the 'thread_id'.
+     *  @note  If NDEBUG is defined, do nothing.
+     *         Also, to get correct results you need to turn off optimizations and enable the -g, -rdynamic flags.
      */
     static long long capture_current_stackframe(long long thread_id);
 
@@ -53,6 +55,8 @@ public:
      *  @param thread_id  Keyword to use when storing/deleting the backtrace list in the map buffer.
      *  @return  Return the ID of the current thread that captured the backtrace list as a long long type.
      *           The returned ID will be the same as the 'thread_id'.
+     *  @note  If NDEBUG is defined, do nothing.
+     *         Also, to get correct results you need to turn off optimizations and enable the -g, -rdynamic flags.
      */
     static long long capture_current_stackframe(std::thread::id thread_id);
 
@@ -60,6 +64,8 @@ public:
      *  @brief  Capture the backtrace list from the stackframe of the current thread and store it in std::map.
      *          This method use the current thread ID as a keyword.
      *  @return  Return the ID of the current thread that captured the backtrace list as a long long type.
+     *  @note  If NDEBUG is defined, do nothing.
+     *         Also, to get correct results you need to turn off optimizations and enable the -g, -rdynamic flags.
      */
     static long long capture_current_stackframe();
 
@@ -79,12 +85,15 @@ protected:
      *  @brief  Capture the backtrace list from the stackframe of the current thread and store it in std::map.
      *  @param thread_id  Keyword to use when storing/deleting the backtrace list in the map buffer.
      *  @param skip_depth  Set the number of stackframes to omit when capturing the stackframe.
-     *                     If set to the default(2), the call informations for this function and internal routines are omitted.
+     *                     If 'enable_skip_capture_routines' is true, the capture routine is excluded from counting.
+     *  @param enable_skip_capture_routines  If set to the default(true), the call informations for this function and internal routines are omitted.
      *  @return  Return the ID of the current thread that captured the backtrace list as a long long type.
      *           The returned ID will be the same as the 'thread_id'.
+     *  @note  If NDEBUG is defined, do nothing.
+     *         Also, to get correct results you need to turn off optimizations and enable the -g, -rdynamic flags.
      */
-    static long long _capture_current_stackframe(long long thread_id, unsigned int skip_depth = 2);
-
+    static long long _capture_current_stackframe(long long thread_id, unsigned int skip_depth, bool enable_skip_capture_routines = true);
+protected:
     /**
      *  @brief  Capture the stackframe of the current thread, and backtrace it.
      *          The backtrace informations include the filename, line number, and function name of each call.
@@ -103,6 +112,10 @@ protected:
     /* Convert the data type of the thread ID from std::thread::id to long long.  */
     static long long _translate_thread_id(std::thread::id thread_id);
 
+    /* Split the multi-line string into lines.  */
+    static std::vector<std::string> split_string_into_lines(const std::string& multiline_string);
+
+#if defined(STACK_TRACER_OS_LINUX)
     /**
      *  @brief  Execute the input command on the console.
      *  @param command  User-defined command.
@@ -110,9 +123,6 @@ protected:
      *  @return  Command execution result.
      */
     static std::string execute_command(std::string command, bool enable_error_skip = true);
-
-    /* Split the multi-line string into lines.  */
-    static std::vector<std::string> split_string_into_lines(const std::string& multiline_string);
 
     /**
      *  @brief  Get the current program name.
@@ -132,17 +142,22 @@ protected:
     /* Get the base address of the current process in decimal.  */
     static uintptr_t get_base_address_decimal();
 
+#endif
+
     /* Convert a hexadecimal string to a decimal value.  */
     static uintptr_t convert_hex_to_decimal(std::string hex);
 
     /* Convert a decimal value to a hexadecimal string.  */
     static std::string convert_decimal_to_hex(uintptr_t decimal, bool enable_uppercase = false);
 
+#if defined(STACK_TRACER_OS_LINUX)
     /**
      *  @brief  Demangle the mangled name in C/C++.
      *  @return  Demangled name.
      */
     static std::string demangle(const std::string& mangled_name);
+
+#endif
 
     // Buffer to store backtrace list
     static std::mutex m_mutex;

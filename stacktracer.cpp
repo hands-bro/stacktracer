@@ -1,5 +1,6 @@
 // stacktracer.cpp
 #include "stacktracer.h"
+#include <algorithm>	// for std::reverse()
 #include <fstream>		// for std::ifstream
 #include <sstream>		// for istringstream, stringstream, getline()
 #include <array>		// for std::array
@@ -43,64 +44,109 @@ void StackTracer::register_exception_handler() {
 #endif
 }
 
-long long StackTracer::_capture_current_stackframe(long long thread_id, unsigned int skip_depth) {
-    void* virtual_addresses[1024] = {0, };
-    size_t trace_count;
+long long StackTracer::_capture_current_stackframe(long long thread_id, unsigned int skip_depth, bool enable_skip_capture_routines) {
+#ifdef NDEBUG
+	// If NDEBUG is defined, do nothing.
+	return thread_id;
+#endif
 
     // Capture the backtrace
-    trace_count = backtrace(virtual_addresses, 1024);
-    char **symbols = backtrace_symbols(virtual_addresses, trace_count);  
+	void* virtual_addresses[1024] = {0, };
+    int trace_count = backtrace(virtual_addresses, 1024);
 
 	// Check the validation
 	if (trace_count < skip_depth) {
 		throw std::runtime_error("failed to backtrace the stack frame");
 	}
 
+	// Get names of functions from the backtrace list
+    char** symbols = backtrace_symbols(virtual_addresses, trace_count);
+
+	// Check the validation
+	if (symbols == nullptr) {
+		throw std::runtime_error("failed to get symbol information");
+	}
+
+	// Change to the smart pointer
+	std::unique_ptr<char*, decltype(&free)> symbols_ptr(symbols, &free);
+
+	// Declare the temporary buffer
+	std::vector<std::pair<void*, std::string>> buffer;
+
+	// Push the results of backtracing the stack frame onto the buffer
+	for (int i=0; i<trace_count; ++i) {
+		std::string symbol_info(symbols_ptr.get()[i]);
+
+		if (enable_skip_capture_routines && symbol_info.find("StackTracer") != std::string::npos) {
+			if (symbol_info.find("capture_current_stackframe") != std::string::npos
+				|| symbol_info.find("backtrace_stackframe") != std::string::npos) {
+				continue;
+			}
+		}
+
+		if (skip_depth > 0) {
+			--skip_depth;
+			continue;
+		}
+
+		buffer.push_back(std::pair<void*, std::string>(virtual_addresses[i], symbol_info));
+    }
+
+	// Reorder the elements in the opposite order
+	std::reverse(buffer.begin(), buffer.end());
+
 	// Safely lock the mutex
 	std::lock_guard<std::mutex> lock(m_mutex);
 
-	// Push the results of backtracing the stack frame onto the buffer
-	std::vector<std::pair<void*, std::string>>& buffer = m_trace_map[thread_id];
+	// Get a reference to the static buffer to store the backtrace list
+	std::vector<std::pair<void*, std::string>>& backtrace_list = m_trace_map[thread_id];
 
-    for (int i=trace_count-1; i>=skip_depth; --i) {
-		buffer.push_back(std::pair<void*, std::string>(virtual_addresses[i], std::string(symbols[i])));
-    }
-
-	// Release the symbols array
-	free(symbols);
+	// Push the re-ordered backtrace list onto the static buffer
+	backtrace_list.insert(backtrace_list.end(), buffer.begin(), buffer.end());
 
 	return thread_id;
 }
 
 long long StackTracer::capture_current_stackframe(long long thread_id) {
-	return _capture_current_stackframe(thread_id, 2);
+	return _capture_current_stackframe(thread_id, 0, true);
 }
 
 long long StackTracer::capture_current_stackframe(std::thread::id thread_id) {
-	return _capture_current_stackframe(_translate_thread_id(thread_id), 2);
+	return _capture_current_stackframe(_translate_thread_id(thread_id), 0, true);
 }
 
 long long StackTracer::capture_current_stackframe() {
-	return _capture_current_stackframe(_translate_thread_id(std::this_thread::get_id()), 2);
+	return _capture_current_stackframe(_translate_thread_id(std::this_thread::get_id()), 0, true);
 }
 
 std::string StackTracer::get_traceback_log() {
 	// Get the current thread id
 	long long thread_id = _translate_thread_id(std::this_thread::get_id());
 
+	// Initialize a buffer for backtrace logs.
+	std::string trace_log("Traceback (most recent call last):");
+
 	// Safely lock the mutex
 	std::lock_guard<std::mutex> lock(m_mutex);
 
-	// Get the current execution program name
-	std::vector<std::string> program_names = get_program_name();
+	// Get a reference to the buffer to get the backtrace list
+	std::vector<std::pair<void*, std::string>>& buffer = m_trace_map[thread_id];
+
+	// Check the validation
+	if (buffer.size() == 0) {
+		trace_log += std::string("\n  (N/A)");
+		trace_log += std::string("\nnote: To avoid performance degradation, stackframe is not captured if NDEBUG is defined.");
+		trace_log += std::string("\n      Also, to get correct results you need to turn off optimizations and enable the -g, -rdynamic flags.");
+		return trace_log;
+	}
 
 	// Get the base address of the current process
 	uintptr_t base_address_decimal = get_base_address_decimal();
 
-	// Print out the traceback log
-	std::string trace_log("Traceback (most recent call last / line numbers may differ from actual):");
-	std::vector<std::pair<void*, std::string>>& buffer = m_trace_map[thread_id];
-	
+	// Get the current execution program name
+	std::vector<std::string> program_names = get_program_name();
+
+	// Generate traceback logs by analyzing symbol informations
 	for (std::vector<std::pair<void*, std::string>>::const_iterator it=buffer.cbegin(); it!=buffer.cend(); ++it) {
 		// Convert the virtual addresses to correct addresses
 		uintptr_t virtual_address_decimal = reinterpret_cast<uintptr_t>(it->first);
@@ -137,7 +183,7 @@ std::string StackTracer::get_traceback_log() {
 
 void StackTracer::_backtrace_stackframe(int signal) {
 	// Capture the backtrace list of the current thread
-	_capture_current_stackframe(_translate_thread_id(std::this_thread::get_id()), 2);
+	_capture_current_stackframe(_translate_thread_id(std::this_thread::get_id()), 0, true);
 
 	// Capture the stack frame of the current thread, and backtrace it.
 	std::string trace_log = get_traceback_log();
@@ -158,6 +204,20 @@ long long StackTracer::_translate_thread_id(std::thread::id thread_id) {
 
 	return translated_id;
 }
+
+std::vector<std::string> StackTracer::split_string_into_lines(const std::string& multiline_string) {
+	std::istringstream stream(multiline_string);
+	std::string line;
+	std::vector<std::string> lines;
+
+	while (std::getline(stream, line)) {
+		lines.push_back(line);
+	}
+
+	return lines;
+}
+
+#if defined(STACK_TRACER_OS_LINUX)
 
 std::string StackTracer::execute_command(std::string command, bool enable_error_skip) {
 	// Modify the command
@@ -184,18 +244,6 @@ std::string StackTracer::execute_command(std::string command, bool enable_error_
 	pclose(pipe);
 
 	return command_result;
-}
-
-std::vector<std::string> StackTracer::split_string_into_lines(const std::string& multiline_string) {
-	std::istringstream stream(multiline_string);
-	std::string line;
-	std::vector<std::string> lines;
-
-	while (std::getline(stream, line)) {
-		lines.push_back(line);
-	}
-
-	return lines;
 }
 
 std::vector<std::string> StackTracer::get_program_name() {
@@ -301,6 +349,8 @@ uintptr_t StackTracer::get_base_address_decimal() {
 	return base_address_decimal;
 }
 
+#endif
+
 uintptr_t StackTracer::convert_hex_to_decimal(std::string hex) {
 	// Input into the string stream
 	std::stringstream stream;
@@ -337,6 +387,8 @@ std::string StackTracer::convert_decimal_to_hex(uintptr_t decimal, bool enable_u
 	return hex;
 }
 
+#if defined(STACK_TRACER_OS_LINUX)
+
 std::string StackTracer::demangle(const std::string& mangled_name) {
 	// Demangle the symbol name using C++11 smart pointer
 	int status = 0;
@@ -351,3 +403,5 @@ std::string StackTracer::demangle(const std::string& mangled_name) {
 	
 	return std::string(demangled_name.get());
 }
+
+#endif
