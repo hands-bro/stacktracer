@@ -22,6 +22,9 @@
 #endif
 
 // Define static member variables
+#if defined(STACK_TRACER_OS_WINDOWS)
+std::atomic<bool> StackTracer::m_is_symbol_initialized(false);
+#endif
 std::mutex StackTracer::m_mutex;
 std::map< long long, std::vector<std::pair<void*, std::string>> > StackTracer::m_trace_map;
 
@@ -33,7 +36,45 @@ StackTracer::~StackTracer() {
     // TODO :
 }
 
+#if defined(STACK_TRACER_OS_WINDOWS)
+void StackTracer::_initialize_symbols() {
+	std::unique_lock<std::mutex> lock(m_mutex);
+
+	// Check the current state
+	if (m_is_symbol_initialized.load()) {
+		// Already initialized
+		return;
+	}
+
+	// Get a handle of the current process
+	HANDLE process_handle = GetCurrentProcess();
+
+	// Initialize symbols
+	SymSetOptions(SYMOPT_DEFERRED_LOADS);
+	SymInitialize(process_handle, NULL, TRUE);
+
+	// Register to call the symbol cleanup function when the program terminates
+	atexit(StackTracer::_cleanup_symbols);
+
+	// Finalize symbols
+	//SymCleanup(process_handle);
+
+	// Switch the flag
+	m_is_symbol_initialized.store(true);
+}
+
+void StackTracer::_cleanup_symbols() {
+	SymCleanup(GetCurrentProcess());
+}
+
+#endif
+
 void StackTracer::register_exception_handler() {
+#if defined(STACK_TRACER_OS_WINDOWS)
+	// Activate symbols (for Windows only)
+	StackTracer::_initialize_symbols();
+#endif
+
 	// Register an exception handler for segment fault
 	signal(SIGABRT, _backtrace_stackframe);	// Aborted (core dumped)
 	signal(SIGSEGV, _backtrace_stackframe);	// Segment fault
@@ -50,15 +91,78 @@ long long StackTracer::_capture_current_stackframe(long long thread_id, unsigned
 	return thread_id;
 #endif
 
+#if defined(STACK_TRACER_OS_WINDOWS)
+	// Activate symbols (for Windows only)
+	StackTracer::_initialize_symbols();
+#endif
+
     // Capture the backtrace
 	void* virtual_addresses[1024] = {0, };
+#if defined(STACK_TRACER_OS_WINDOWS)
+	int trace_count = CaptureStackBackTrace(0, 1024, virtual_addresses, NULL);
+#elif defined(STACK_TRACER_OS_LINUX)
     int trace_count = backtrace(virtual_addresses, 1024);
+#endif
 
 	// Check the validation
 	if (trace_count < skip_depth) {
 		throw std::runtime_error("failed to backtrace the stack frame");
 	}
 
+	// Declare the temporary buffer
+	std::vector<std::pair<void*, std::string>> buffer;
+
+#if defined(STACK_TRACER_OS_WINDOWS)
+	// Allocate a temporary buffer to get symbol informations
+	SYMBOL_INFO* symbols = (SYMBOL_INFO*)malloc(sizeof(SYMBOL_INFO) + 256 * sizeof(char));
+
+	// Check the validation
+	if(symbols == nullptr) {
+		throw std::runtime_error("failed to get symbol information");
+	}
+
+	// Set default options
+	symbols->MaxNameLen = 255;
+	symbols->SizeOfStruct = sizeof(SYMBOL_INFO);
+
+	// Change to the smart pointer
+	std::unique_ptr<SYMBOL_INFO, decltype(&free)> symbols_ptr(symbols, &free);
+
+	// Get a handle of the current process
+	HANDLE process_handle = GetCurrentProcess();
+
+	// Push the results of backtracing the stack frame onto the buffer
+	for(int i=0; i<trace_count; ++i) {
+		// Get a symbol information from the virtual address
+		// (also, convert the virtual addresses to correct addresses)
+		if(!SymFromAddr(process_handle, (DWORD64)(virtual_addresses[i]), nullptr, symbols)) {
+			std::string virtual_address_hex = StackTracer::convert_decimal_to_hex((uintptr_t)virtual_addresses[i]);
+			buffer.push_back(std::pair<void*, std::string>(
+				virtual_addresses[i],
+				std::string("Unknown symbol [") + StackTracer::convert_decimal_to_hex((uintptr_t)virtual_addresses[i]) + "]"));
+			continue;
+		}
+
+		std::string symbol_info(symbols->Name);
+		
+		if(enable_skip_capture_routines && symbol_info.find("StackTracer") != std::string::npos) {
+			if(symbol_info.find("capture_current_stackframe") != std::string::npos
+				|| symbol_info.find("backtrace_stackframe") != std::string::npos) {
+				continue;
+			}
+		}
+
+		if(skip_depth > 0) {
+			--skip_depth;
+			continue;
+		}
+
+		buffer.push_back(std::pair<void*, std::string>(
+			virtual_addresses[i],
+			symbol_info + " [" + StackTracer::convert_decimal_to_hex(symbols->Address) + "]"));
+	}
+
+#elif defined(STACK_TRACER_OS_LINUX)
 	// Get names of functions from the backtrace list
     char** symbols = backtrace_symbols(virtual_addresses, trace_count);
 
@@ -70,8 +174,6 @@ long long StackTracer::_capture_current_stackframe(long long thread_id, unsigned
 	// Change to the smart pointer
 	std::unique_ptr<char*, decltype(&free)> symbols_ptr(symbols, &free);
 
-	// Declare the temporary buffer
-	std::vector<std::pair<void*, std::string>> buffer;
 
 	// Push the results of backtracing the stack frame onto the buffer
 	for (int i=0; i<trace_count; ++i) {
@@ -91,6 +193,8 @@ long long StackTracer::_capture_current_stackframe(long long thread_id, unsigned
 
 		buffer.push_back(std::pair<void*, std::string>(virtual_addresses[i], symbol_info));
     }
+
+#endif
 
 	// Reorder the elements in the opposite order
 	std::reverse(buffer.begin(), buffer.end());
@@ -140,6 +244,32 @@ std::string StackTracer::get_traceback_log() {
 		return trace_log;
 	}
 
+#if defined(STACK_TRACER_OS_WINDOWS)
+	// Get a handle of the current process
+	HANDLE process_handle = GetCurrentProcess();
+
+	// Generate traceback logs by analyzing symbol informations
+	for(std::vector<std::pair<void*, std::string>>::const_iterator it=buffer.cbegin(); it!=buffer.cend(); ++it) {
+		// Initialize essential parameters
+		DWORD displacement = 0;
+		IMAGEHLP_LINE64 line_data;
+		line_data.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+
+		// Get filename, and line number
+		if(!SymGetLineFromAddr64(process_handle, (DWORD64)(it->first) - 1, &displacement, &line_data)) {
+			// Record an original symbol information
+			trace_log += std::string("\n  ") + it->second;
+		}
+		else {
+			// Record the more detail informations
+			//std::string module_name = demangle(results[0]);
+			std::string module_name = it->second;
+			std::string filename_and_linenumber = std::string(line_data.FileName) + ":" + std::to_string(line_data.LineNumber);
+			trace_log += std::string("\n  File \"") + filename_and_linenumber + "\", in " + module_name;
+		}
+	}
+
+#elif defined(STACK_TRACER_OS_LINUX)
 	// Get the base address of the current process
 	uintptr_t base_address_decimal = get_base_address_decimal();
 
@@ -152,7 +282,7 @@ std::string StackTracer::get_traceback_log() {
 		uintptr_t virtual_address_decimal = reinterpret_cast<uintptr_t>(it->first);
 		std::string correct_address_hex = convert_decimal_to_hex(virtual_address_decimal - base_address_decimal - 1);
 		
-        // Use addr2line to get function name, filename, and and line number
+        // Use addr2line to get function name, filename, and line number
         std::string command = "addr2line -f -C -e " + std::string(program_names[0]) + " " + correct_address_hex;
 		std::vector<std::string> results = split_string_into_lines(execute_command(command));
 
@@ -172,6 +302,8 @@ std::string StackTracer::get_traceback_log() {
 			trace_log += std::string("\n  File \"") + filename_and_linenumber + "\", in " + module_name;
 		}
     }
+
+#endif
 
 	// Clear the buffer and release the memory
 	buffer.clear();

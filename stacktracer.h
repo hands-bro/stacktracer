@@ -4,6 +4,7 @@
 #define __STACK_TRACER_H__
 
 #include <iostream>     // for uintptr_t, pid_t
+#include <atomic>
 #include <map>
 #include <mutex>
 #include <string>
@@ -81,6 +82,11 @@ public:
     static std::string get_traceback_log();
 
 protected:
+#if defined(STACK_TRACER_OS_WINDOWS)
+    static void _initialize_symbols();
+    static void _cleanup_symbols();
+#endif
+
     /**
      *  @brief  Capture the backtrace list from the stackframe of the current thread and store it in std::map.
      *  @param thread_id  Keyword to use when storing/deleting the backtrace list in the map buffer.
@@ -93,7 +99,7 @@ protected:
      *         Also, to get correct results you need to turn off optimizations and enable the -g, -rdynamic flags.
      */
     static long long _capture_current_stackframe(long long thread_id, unsigned int skip_depth, bool enable_skip_capture_routines = true);
-protected:
+
     /**
      *  @brief  Capture the stackframe of the current thread, and backtrace it.
      *          The backtrace informations include the filename, line number, and function name of each call.
@@ -150,6 +156,9 @@ protected:
     /* Convert a decimal value to a hexadecimal string.  */
     static std::string convert_decimal_to_hex(uintptr_t decimal, bool enable_uppercase = false);
 
+    // Symbol initialization flag
+    static std::atomic<bool> m_is_symbol_initialized;
+
 #if defined(STACK_TRACER_OS_LINUX)
     /**
      *  @brief  Demangle the mangled name in C/C++.
@@ -159,8 +168,10 @@ protected:
 
 #endif
 
-    // Buffer to store backtrace list
+    // Variable to control asynchronous logic
     static std::mutex m_mutex;
+
+    // Buffer to store backtrace list
     static std::map< long long, std::vector<std::pair<void*, std::string>> > m_trace_map;
 
 } StackTracer;
