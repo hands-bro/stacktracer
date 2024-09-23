@@ -83,8 +83,19 @@ public:
 
 protected:
 #if defined(STACK_TRACER_OS_WINDOWS)
+    /**
+    *  @brief  To run SymInitialize() and SymSetOptions().
+    *          Called only once when register_exception_handler() or capture_current_stackframe() is executed for the first time.
+    *          (Multi-thread safe)
+    */
     static void _initialize_symbols();
+
+    /**
+    *  @brief  To run SymCleanup().
+    *          This function is registered with atexit() and is automatically called when the program terminates.
+    */
     static void _cleanup_symbols();
+
 #endif
 
     /**

@@ -38,7 +38,7 @@ StackTracer::~StackTracer() {
 
 #if defined(STACK_TRACER_OS_WINDOWS)
 void StackTracer::_initialize_symbols() {
-	std::unique_lock<std::mutex> lock(m_mutex);
+	std::lock_guard<std::mutex> lock(m_mutex);
 
 	// Check the current state
 	if (m_is_symbol_initialized.load()) {
@@ -50,14 +50,11 @@ void StackTracer::_initialize_symbols() {
 	HANDLE process_handle = GetCurrentProcess();
 
 	// Initialize symbols
-	SymSetOptions(SYMOPT_DEFERRED_LOADS);
 	SymInitialize(process_handle, NULL, TRUE);
+	SymSetOptions(SYMOPT_DEFERRED_LOADS);
 
 	// Register to call the symbol cleanup function when the program terminates
 	atexit(StackTracer::_cleanup_symbols);
-
-	// Finalize symbols
-	//SymCleanup(process_handle);
 
 	// Switch the flag
 	m_is_symbol_initialized.store(true);
@@ -96,54 +93,82 @@ long long StackTracer::_capture_current_stackframe(long long thread_id, unsigned
 	StackTracer::_initialize_symbols();
 #endif
 
-    // Capture the backtrace
-	void* virtual_addresses[1024] = {0, };
 #if defined(STACK_TRACER_OS_WINDOWS)
-	int trace_count = CaptureStackBackTrace(0, 1024, virtual_addresses, NULL);
-#elif defined(STACK_TRACER_OS_LINUX)
-    int trace_count = backtrace(virtual_addresses, 1024);
+	// Capture the current stackframe
+	CONTEXT context;
+	RtlCaptureContext(&context);
+
+	STACKFRAME64 stackframe = {0, };
+#ifdef _M_IX86
+	DWORD machine_type = IMAGE_FILE_MACHINE_I386;
+	stackframe.AddrPC.Offset = context.Eip;
+	stackframe.AddrPC.Mode = AddrModeFlat;
+	stackframe.AddrFrame.Offset = context.Ebp;
+	stackframe.AddrFrame.Mode = AddrModeFlat;
+	stackframe.AddrStack.Offset = context.Esp;
+	stackframe.AddrStack.Mode = AddrModeFlat;
+#elif _M_X64
+	DWORD machine_type = IMAGE_FILE_MACHINE_AMD64;
+	stackframe.AddrPC.Offset = context.Rip;
+	stackframe.AddrPC.Mode = AddrModeFlat;
+	stackframe.AddrFrame.Offset = context.Rsp;
+	stackframe.AddrFrame.Mode = AddrModeFlat;
+	stackframe.AddrStack.Offset = context.Rsp;
+	stackframe.AddrStack.Mode = AddrModeFlat;
+#else
+#error "Unsupported platform"
 #endif
+
+	// Get handles of the current process and thread
+	HANDLE process_handle = GetCurrentProcess();
+	HANDLE thread_handle = GetCurrentThread();
+
+	// Declare a temporary buffer to get virtual addresses
+	std::vector<DWORD64> virtual_addresses;
+
+	// Capture the backtrace
+	while(StackWalk64(machine_type, process_handle, thread_handle, &stackframe, &context, nullptr, SymFunctionTableAccess64, SymGetModuleBase64, nullptr)) {
+		// Check if there are any more stackframes left to trace
+		if(stackframe.AddrPC.Offset == 0) {
+			break;
+		}
+		// Get target addresses
+		virtual_addresses.push_back(stackframe.AddrPC.Offset);
+	}
+
+#elif defined(STACK_TRACER_OS_LINUX)
+	// Capture the current stackframe
+	void* virtual_addresses[1024] = {0, };
+    int trace_count = backtrace(virtual_addresses, 1024);
 
 	// Check the validation
 	if (trace_count < skip_depth) {
 		throw std::runtime_error("failed to backtrace the stack frame");
 	}
 
+#endif
+
 	// Declare the temporary buffer
 	std::vector<std::pair<void*, std::string>> buffer;
 
 #if defined(STACK_TRACER_OS_WINDOWS)
-	// Allocate a temporary buffer to get symbol informations
-	SYMBOL_INFO* symbols = (SYMBOL_INFO*)malloc(sizeof(SYMBOL_INFO) + 256 * sizeof(char));
-
-	// Check the validation
-	if(symbols == nullptr) {
-		throw std::runtime_error("failed to get symbol information");
-	}
-
-	// Set default options
-	symbols->MaxNameLen = 255;
-	symbols->SizeOfStruct = sizeof(SYMBOL_INFO);
-
-	// Change to the smart pointer
-	std::unique_ptr<SYMBOL_INFO, decltype(&free)> symbols_ptr(symbols, &free);
-
-	// Get a handle of the current process
-	HANDLE process_handle = GetCurrentProcess();
-
 	// Push the results of backtracing the stack frame onto the buffer
-	for(int i=0; i<trace_count; ++i) {
+	for (std::vector<DWORD64>::const_iterator it=virtual_addresses.begin(); it!=virtual_addresses.end(); ++it) {
+		// Initialize a temporary buffer to get symbol informations
+		char symbol_buffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(TCHAR)] = {0, };
+		SYMBOL_INFO* symbol = reinterpret_cast<SYMBOL_INFO*>(symbol_buffer);
+		symbol->MaxNameLen = MAX_SYM_NAME;
+		symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+
 		// Get a symbol information from the virtual address
 		// (also, convert the virtual addresses to correct addresses)
-		if(!SymFromAddr(process_handle, (DWORD64)(virtual_addresses[i]), nullptr, symbols)) {
-			std::string virtual_address_hex = StackTracer::convert_decimal_to_hex((uintptr_t)virtual_addresses[i]);
-			buffer.push_back(std::pair<void*, std::string>(
-				virtual_addresses[i],
-				std::string("Unknown symbol [") + StackTracer::convert_decimal_to_hex((uintptr_t)virtual_addresses[i]) + "]"));
-			continue;
+		std::string symbol_info;
+		if(SymFromAddr(process_handle, *it, nullptr, symbol)) {
+			symbol_info = symbol->Name;
 		}
-
-		std::string symbol_info(symbols->Name);
+		else {
+			symbol_info = std::string("Unknown function [") + StackTracer::convert_decimal_to_hex((uintptr_t)*it) + "]";
+		}
 		
 		if(enable_skip_capture_routines && symbol_info.find("StackTracer") != std::string::npos) {
 			if(symbol_info.find("capture_current_stackframe") != std::string::npos
@@ -157,9 +182,7 @@ long long StackTracer::_capture_current_stackframe(long long thread_id, unsigned
 			continue;
 		}
 
-		buffer.push_back(std::pair<void*, std::string>(
-			virtual_addresses[i],
-			symbol_info + " [" + StackTracer::convert_decimal_to_hex(symbols->Address) + "]"));
+		buffer.push_back(std::pair<void*, std::string>((void*)*it, symbol_info));
 	}
 
 #elif defined(STACK_TRACER_OS_LINUX)
@@ -255,17 +278,16 @@ std::string StackTracer::get_traceback_log() {
 		IMAGEHLP_LINE64 line_data;
 		line_data.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
 
-		// Get filename, and line number
-		if(!SymGetLineFromAddr64(process_handle, (DWORD64)(it->first) - 1, &displacement, &line_data)) {
-			// Record an original symbol information
-			trace_log += std::string("\n  ") + it->second;
+		// Get filename and line number
+		if(SymGetLineFromAddr64(process_handle, (DWORD64)(it->first) - 1, &displacement, &line_data)) {
+			// Record the more detail informations
+			std::string filename_and_linenumber = std::string(line_data.FileName) + ":" + std::to_string(line_data.LineNumber);
+			trace_log += std::string("\n  File \"") + filename_and_linenumber + "\", in " + it->second;
 		}
 		else {
-			// Record the more detail informations
-			//std::string module_name = demangle(results[0]);
-			std::string module_name = it->second;
-			std::string filename_and_linenumber = std::string(line_data.FileName) + ":" + std::to_string(line_data.LineNumber);
-			trace_log += std::string("\n  File \"") + filename_and_linenumber + "\", in " + module_name;
+			// Record a basic symbol information (no use)
+			//trace_log += std::string("\n  Unknown location in ") + it->second;
+			continue;
 		}
 	}
 
