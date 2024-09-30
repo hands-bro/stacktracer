@@ -70,11 +70,14 @@ void StackTracer::register_exception_handler() {
 #if defined(STACK_TRACER_OS_WINDOWS)
 	// Activate symbols (for Windows only)
 	StackTracer::_initialize_symbols();
+
+	// Set unhandled exception filter for SEH(Structured Exception Handling) (for Windows only)
+	SetUnhandledExceptionFilter((PTOP_LEVEL_EXCEPTION_FILTER)StackTracer::_unhandled_exception_handler);
 #endif
 
 	// Register an exception handler for segment fault
 	signal(SIGABRT, _backtrace_stackframe);	// Aborted (core dumped)
-	signal(SIGSEGV, _backtrace_stackframe);	// Segment fault
+	signal(SIGSEGV, _backtrace_stackframe);	// Segment fault (It is limited on Windows)
 	signal(SIGILL, _backtrace_stackframe);	// Illegal instruction
 	signal(SIGFPE, _backtrace_stackframe);  // Erroneous arithmetic operation
 #if defined(STACK_TRACER_OS_LINUX)
@@ -348,6 +351,42 @@ void StackTracer::_backtrace_stackframe(int signal) {
 	// Terminate this program
 	std::exit(1);
 }
+
+#if defined(STACK_TRACER_OS_WINDOWS)
+long StackTracer::_unhandled_exception_handler(void* exception_info) {
+	// Structured exception handling
+	PEXCEPTION_RECORD pER = ((EXCEPTION_POINTERS*)exception_info)->ExceptionRecord;
+	
+	char error_log[512] = {0, };
+
+	if(pER->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+		sprintf_s(error_log, sizeof(error_log), "attempt to %s data at address %p",
+			pER->ExceptionInformation[0] ? "write" : "read",
+			pER->ExceptionInformation[1]);
+	}
+	else {
+		sprintf_s(error_log, sizeof(error_log), "ExceptionCode=%x, ExceptionAddress=%p", pER->ExceptionCode, pER->ExceptionAddress);
+	}
+
+	std::printf("error: %s\n", error_log);
+	
+	// Capture the backtrace list of the current thread
+	_capture_current_stackframe(_translate_thread_id(std::this_thread::get_id()), 0, true);
+
+	// Capture the stack frame of the current thread, and backtrace it.
+	std::string trace_log = get_traceback_log();
+
+	// Print out the Traceback log
+	std::printf("%s\n", trace_log.c_str());
+
+	/* Notifies the system that an exception handler has been called.
+	   If this function was called by SetUnhandledExceptionFilter(), the current process is terminated.
+	   If it was called as a parameter to the __except() statement,
+	   the code inside the __except block is executed after the function ends.  */
+	return EXCEPTION_EXECUTE_HANDLER;
+}
+
+#endif
 
 long long StackTracer::_translate_thread_id(std::thread::id thread_id) {
 	long long translated_id;

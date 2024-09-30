@@ -126,6 +126,29 @@ protected:
      */
     static void _backtrace_stackframe(int signal = -1);
 
+#if defined(STACK_TRACER_OS_WINDOWS)
+    /**
+    *  @brief  Exception handler to support SEH(Structured Exception Handling) on Microsoft Windows.
+    *
+    *          This function is a global exception handler that can handle unhandled exceptions.
+    *          Unlike the try-catch statement, this function is the last exception handler called
+    *          just before the program and other exception handlers terminate without handling the exception,
+    *          and the program terminates after the function ends.
+    *
+    *          SEH using this function is necessary for the following reasons:
+    *          1. In the Windows C++ environment, the standard function signal() cannot handle certain asynchronous exceptions such as stack overflow.
+    *          2. The Windows-only function _set_se_translator() has similar limitations, and must be called separately for each thread.
+    *          3. The __try/__except statement is a powerful exception handler, but it cannot be used within a function where local variables are declared.
+    *
+    *  @note  On Windows, after enabling the SEH support option(/EHa) of the 'cl' compiler,
+    *         this method should be registered as a SE handler
+    *         exactly once at program startup by SetUnhandledExceptionFilter.
+    *         (If the current platform is not Windows, these actions are unnecessary.)
+    */
+    static long __stdcall _unhandled_exception_handler(void* exception_info);
+
+#endif
+
     /* Convert the data type of the thread ID from std::thread::id to long long.  */
     static long long _translate_thread_id(std::thread::id thread_id);
 
