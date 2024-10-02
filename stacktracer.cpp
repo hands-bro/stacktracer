@@ -173,10 +173,13 @@ long long StackTracer::_capture_current_stackframe(long long thread_id, unsigned
 			symbol_info = std::string("Unknown function [") + StackTracer::convert_decimal_to_hex((uintptr_t)*it) + "]";
 		}
 		
-		if(enable_skip_capture_routines && symbol_info.find("StackTracer") != std::string::npos) {
-			if(symbol_info.find("capture_current_stackframe") != std::string::npos
-				|| symbol_info.find("backtrace_stackframe") != std::string::npos) {
-				continue;
+		if (enable_skip_capture_routines) {
+			if (symbol_info.find("StackTracer") != std::string::npos) {
+				if (symbol_info.find("capture_current_stackframe") != std::string::npos
+					|| symbol_info.find("backtrace_stackframe") != std::string::npos
+					|| symbol_info.find("unhandled_exception_handler") != std::string::npos) {
+					continue;
+				}
 			}
 		}
 
@@ -205,11 +208,19 @@ long long StackTracer::_capture_current_stackframe(long long thread_id, unsigned
 	for (int i=0; i<trace_count; ++i) {
 		std::string symbol_info(symbols_ptr.get()[i]);
 
-		if (enable_skip_capture_routines && symbol_info.find("StackTracer") != std::string::npos) {
-			if (symbol_info.find("capture_current_stackframe") != std::string::npos
-				|| symbol_info.find("backtrace_stackframe") != std::string::npos) {
+		if (enable_skip_capture_routines) {
+			if (symbol_info.find("StackTracer") != std::string::npos) {
+				if (symbol_info.find("capture_current_stackframe") != std::string::npos
+					|| symbol_info.find("backtrace_stackframe") != std::string::npos) {
+					continue;
+				}
+			}
+
+#if defined(__SANITIZE_ADDRESS__)
+			if (symbol_info.find("libasan.so") != std::string::npos) {
 				continue;
 			}
+#endif
 		}
 
 		if (skip_depth > 0) {
@@ -237,12 +248,12 @@ long long StackTracer::_capture_current_stackframe(long long thread_id, unsigned
 	return thread_id;
 }
 
-long long StackTracer::capture_current_stackframe(long long thread_id) {
-	return _capture_current_stackframe(thread_id, 0, true);
+long long StackTracer::capture_current_stackframe(long long thread_id, unsigned int skip_depth) {
+	return _capture_current_stackframe(thread_id, skip_depth, true);
 }
 
-long long StackTracer::capture_current_stackframe(std::thread::id thread_id) {
-	return _capture_current_stackframe(_translate_thread_id(thread_id), 0, true);
+long long StackTracer::capture_current_stackframe(std::thread::id thread_id, unsigned int skip_depth) {
+	return _capture_current_stackframe(_translate_thread_id(thread_id), skip_depth, true);
 }
 
 long long StackTracer::capture_current_stackframe() {
@@ -283,7 +294,7 @@ std::string StackTracer::get_traceback_log() {
 
 		// Get filename and line number
 		if(SymGetLineFromAddr64(process_handle, (DWORD64)(it->first) - 1, &displacement, &line_data)) {
-			// Record the more detail informations
+			// Record the more detail informations in POSIX standard style
 			std::string filename_and_linenumber = std::string(line_data.FileName) + ":" + std::to_string(line_data.LineNumber);
 			trace_log += std::string("\n  File \"") + filename_and_linenumber + "\", in " + it->second;
 		}
@@ -321,7 +332,7 @@ std::string StackTracer::get_traceback_log() {
 			trace_log += std::string("\n  ") + it->second;
 		}
 		else {
-			// Record the more detail informations
+			// Record the more detail informations in POSIX standard style
 			std::string module_name = demangle(results[0]);
 			std::string filename_and_linenumber = results[1];
 			trace_log += std::string("\n  File \"") + filename_and_linenumber + "\", in " + module_name;
@@ -387,6 +398,10 @@ long StackTracer::_unhandled_exception_handler(void* exception_info) {
 }
 
 #endif
+
+long long StackTracer::get_current_thread_id() {
+	return _translate_thread_id(std::this_thread::get_id());
+}
 
 long long StackTracer::_translate_thread_id(std::thread::id thread_id) {
 	long long translated_id;

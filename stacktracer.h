@@ -44,22 +44,24 @@ public:
     /**
      *  @brief  Capture the backtrace list from the stackframe of the current thread and store it in std::map.
      *  @param thread_id  Keyword to use when storing/deleting the backtrace list in the map buffer.
+     *  @param skip_depth  Set the number of stackframes to omit when capturing the stackframe.
      *  @return  Return the ID of the current thread that captured the backtrace list as a long long type.
      *           The returned ID will be the same as the 'thread_id'.
      *  @note  If NDEBUG is defined, do nothing.
      *         Also, to get correct results you need to turn off optimizations and enable the -g, -rdynamic flags.
      */
-    static long long capture_current_stackframe(long long thread_id);
+    static long long capture_current_stackframe(long long thread_id, unsigned int skip_depth = 0);
 
     /**
      *  @brief  Capture the backtrace list from the stackframe of the current thread and store it in std::map.
      *  @param thread_id  Keyword to use when storing/deleting the backtrace list in the map buffer.
+     *  @param skip_depth  Set the number of stackframes to omit when capturing the stackframe.
      *  @return  Return the ID of the current thread that captured the backtrace list as a long long type.
      *           The returned ID will be the same as the 'thread_id'.
      *  @note  If NDEBUG is defined, do nothing.
      *         Also, to get correct results you need to turn off optimizations and enable the -g, -rdynamic flags.
      */
-    static long long capture_current_stackframe(std::thread::id thread_id);
+    static long long capture_current_stackframe(std::thread::id thread_id, unsigned int skip_depth = 0);
 
     /**
      *  @brief  Capture the backtrace list from the stackframe of the current thread and store it in std::map.
@@ -80,6 +82,12 @@ public:
      *  - This function internally uses the 'addr2line' commands on Linux.
      */
     static std::string get_traceback_log();
+
+    /**
+     *  @brief  Get the ID of the current thread.
+     *  @return  The ID of the current thread converted to long long type.
+     */
+    static long long get_current_thread_id();
 
 protected:
 #if defined(STACK_TRACER_OS_WINDOWS)
@@ -104,6 +112,7 @@ protected:
      *  @param skip_depth  Set the number of stackframes to omit when capturing the stackframe.
      *                     If 'enable_skip_capture_routines' is true, the capture routine is excluded from counting.
      *  @param enable_skip_capture_routines  If set to the default(true), the call informations for this function and internal routines are omitted.
+     *                                       Additionally, when the AddressSanitizer option(-fsanitize=address) is enabled in Linux, the call information for that module is also omitted.
      *  @return  Return the ID of the current thread that captured the backtrace list as a long long type.
      *           The returned ID will be the same as the 'thread_id'.
      *  @note  If NDEBUG is defined, do nothing.
