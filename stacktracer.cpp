@@ -373,7 +373,7 @@ long StackTracer::_unhandled_exception_handler(void* exception_info) {
 	if(pER->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
 		sprintf_s(error_log, sizeof(error_log), "attempt to %s data at address %p",
 			pER->ExceptionInformation[0] ? "write" : "read",
-			pER->ExceptionInformation[1]);
+			(void*)pER->ExceptionInformation[1]);
 	}
 	else {
 		sprintf_s(error_log, sizeof(error_log), "ExceptionCode=%x, ExceptionAddress=%p", pER->ExceptionCode, pER->ExceptionAddress);

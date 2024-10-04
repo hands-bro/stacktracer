@@ -29,17 +29,17 @@
 	#define STACK_TRACER_API
 #endif
 
-typedef class STACK_TRACER_API StackTracer
+typedef class StackTracer
 {
 public:
-    StackTracer();
-    virtual ~StackTracer();
+    STACK_TRACER_API StackTracer();
+    STACK_TRACER_API virtual ~StackTracer();
 
     /**
      *  @brief  Register this class as an error signal handler.
      *  @note  The target signals SIGABRT, SIGSEGV, SIGBUS, SIGILL, and SIGFPE.
      */
-    static void register_exception_handler();
+    STACK_TRACER_API static void register_exception_handler();
 
     /**
      *  @brief  Capture the backtrace list from the stackframe of the current thread and store it in std::map.
@@ -50,7 +50,7 @@ public:
      *  @note  If NDEBUG is defined, do nothing.
      *         Also, to get correct results you need to turn off optimizations and enable the -g, -rdynamic flags.
      */
-    static long long capture_current_stackframe(long long thread_id, unsigned int skip_depth = 0);
+    STACK_TRACER_API static long long capture_current_stackframe(long long thread_id, unsigned int skip_depth = 0);
 
     /**
      *  @brief  Capture the backtrace list from the stackframe of the current thread and store it in std::map.
@@ -61,7 +61,7 @@ public:
      *  @note  If NDEBUG is defined, do nothing.
      *         Also, to get correct results you need to turn off optimizations and enable the -g, -rdynamic flags.
      */
-    static long long capture_current_stackframe(std::thread::id thread_id, unsigned int skip_depth = 0);
+    STACK_TRACER_API static long long capture_current_stackframe(std::thread::id thread_id, unsigned int skip_depth = 0);
 
     /**
      *  @brief  Capture the backtrace list from the stackframe of the current thread and store it in std::map.
@@ -70,7 +70,7 @@ public:
      *  @note  If NDEBUG is defined, do nothing.
      *         Also, to get correct results you need to turn off optimizations and enable the -g, -rdynamic flags.
      */
-    static long long capture_current_stackframe();
+    STACK_TRACER_API static long long capture_current_stackframe();
 
     /**
      *  @brief  Generate a 'Traceback' log from the backtrace list captured by the capture_current_stackframe() function.
@@ -81,13 +81,13 @@ public:
      * 
      *  - This function internally uses the 'addr2line' commands on Linux.
      */
-    static std::string get_traceback_log();
+    STACK_TRACER_API static std::string get_traceback_log();
 
     /**
      *  @brief  Get the ID of the current thread.
      *  @return  The ID of the current thread converted to long long type.
      */
-    static long long get_current_thread_id();
+    STACK_TRACER_API static long long get_current_thread_id();
 
 protected:
 #if defined(STACK_TRACER_OS_WINDOWS)
